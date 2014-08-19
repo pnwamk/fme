@@ -83,6 +83,7 @@
 
 (check-true (lexp? (lexp)))
 
+; lexp-scalar
 (define (lexp-scalar exp var [not-in-val #f])
   (hash-ref exp var not-in-val))
 
@@ -152,12 +153,6 @@
                              (lexp (2 'x) (-1 #f) (42 'z)))
               (lexp (-2 'x) (-42 'z) (1 #f)))
 
-;lexp-scalar-gcd
-; NOTE! currently this includes
-; the constant in the lexp, if it exists
-;(define (lexp-scalar-gcd lexp)
-;  (apply gcd (lexp-scalars lexp)))
-
 ; lexp-has-var?
 (define (lexp-has-var? exp x)
   (hash-has-key? exp x))
@@ -173,6 +168,16 @@
 (check-equal? (lexp-add1 (lexp (1 #f) (5 'x))) 
               (lexp (2 #f) (5 'x)))
 
+; lexp-subst
+(define (lexp-subst exp new old)
+  (if (lexp-has-var? exp old)
+      (lexp-set (lexp-remove exp old) new (lexp-scalar exp old))
+      exp))
+
+(check-equal? (lexp-subst (lexp (1 #f) (5 'x)) 'y 'x) 
+              (lexp (1 #f) (5 'y)))
+
+
 ;**********************************************************************
 ; Linear Inequalities  (leq)
 ; a1x1 + a1x2 + ... <= b1y1 + b2y2 + ...
@@ -187,6 +192,7 @@
               (error "invalid linear inequality"))
             (values l r)))
 
+; leq-exps
 (define (leq-exps ineq)
   (values (leq-lhs ineq) (leq-rhs ineq)))
 
@@ -315,6 +321,20 @@
   (<= lhs-val rhs-val))
 
 
+; leq-subst
+(define (leq-subst ineq new old)
+  (leq (lexp-subst (leq-lhs ineq) new old)
+       (lexp-subst (leq-rhs ineq) new old)))
+
+(check-equal? (leq-subst (leq-subst (leq (lexp (1 'x))
+                                         (lexp (1 'y)))
+                                    'y2 
+                                    'y)
+                         'x2
+                         'x)
+              (leq (lexp (1 'x2))
+                   (lexp (1 'y2))))
+
 ;**********************************************************************
 ; Systems of Integer Linear Inequalities (sli)
 ; a1x1 + a2x2 + ... <= b1y1 + b2y2 + ...
@@ -330,6 +350,9 @@
 (define (sli-vars sli)
   (remove-duplicates (apply append (map leq-vars sli))))
 
+; sli-subst
+(define (sli-subst sli new old)
+  (map (λ (x) (leq-subst x new old)) sli))
 
 ; sli-partition
 ; partitions leq expressions into
@@ -509,6 +532,18 @@
                                    (lexp (1 'z)))
                               (leq (lexp (1 'y))
                                    (lexp (1 'z))))))
+
+; x + y <= z; 0 <= y; 0 <= x -/-> x <= z /\ y <= q
+(check-false (sli-proves-sli? (sli (leq (lexp (1 'x) (1 'y))
+                                   (lexp (1 'z)))
+                              (leq (lexp)
+                                   (lexp (1 'y)))
+                              (leq (lexp)
+                                   (lexp (1 'x))))
+                         (sli (leq (lexp (1 'x))
+                                   (lexp (1 'z)))
+                              (leq (lexp (1 'y))
+                                   (lexp (1 'q))))))
 
 ; 7x <= 29 --> x <= 4
 (check-true (sli-proves-sli? (sli (leq (lexp (7 'x))

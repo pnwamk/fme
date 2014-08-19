@@ -139,6 +139,15 @@ printed in the regular hash form.}
                           (lexp (2 #f) (5 'x)))]
 }
 
+@defproc[(lexp-subst [e lexp?] [new any/c] [old any/c])
+         lexp?]{
+ Substitutes the new variable in for the old.
+ 
+ @examples[#:eval fme-eval
+                  (equal? (lexp-subst (lexp (1 #f) (5 'x)) 'y 'x) 
+                          (lexp (1 #f) (5 'y)))]
+}
+
 
 @section{Linear Inequalities}
 
