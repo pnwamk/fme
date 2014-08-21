@@ -10,6 +10,8 @@
 @title{Fourier-Motzkin Elimination for Integer Systems}
 @author+email["Andrew Kent" "andmkent@indiana.edu"]}
 
+@defmodule[fme]
+
 This package is a simple implementation of the Fourier-Motzkin elimination 
 method. It reasons about systems of linear inequalties (SLIs) and currently
 has two primary functions:
