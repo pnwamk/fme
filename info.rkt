@@ -1,4 +1,6 @@
 #lang info
 
 (define collection "fme")
-(define scribblings '(("manual.scrbl" ())))
+(define scribblings '(("fme.scrbl" ())))
+(define deps (list "base" "rackunit-lib"))
+(define build-deps '("scribble-lib"))
