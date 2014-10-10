@@ -52,7 +52,7 @@
 ; For negation we utilize the equivalence ~(a <= b) <-> 1 + b <= a
 ; since we are concerned with integer solutions.
 
-(require racket/list racket/bool)
+(require racket/list racket/bool racket/contract racket/match)
 (module+ test
     (require rackunit))
 (provide (all-defined-out))
@@ -66,129 +66,139 @@
 ; defining linear combinations
 ; takes list of (scalar symbol)
 ; #f is used for a constant
-(define-syntax lexp
-  (syntax-rules ()
-    [(lexp) (hash)]
-    [(lexp (a x)) 
-     (hash x a)]
-    [(lexp (a x) (b y) ...) 
-     (hash-set (lexp (b y) ...) x a)]))
+(struct constant () #:transparent)
+(define CONST (constant))
+(define lexp? hash?)
 
-(module+ test
-  (check-equal? (lexp) (hash))
-  (check-equal? (lexp (1 'x) (42 'y) (1 #f))
-                (hash 'x 1 'y 42 #f 1)))
-
-
-(define (lexp? x)
-  (hash? x))
-
-(module+ test
-  (check-true (lexp? (lexp))))
+(define/contract (lexp . terms)
+  (->* () #:rest (listof (or/c integer? (list/c integer? any/c))) lexp?)
+  (define coef first) 
+  (define var second)
+  (let loop ([h (hash)]
+             [zxs terms])
+    (match zxs
+      ['() h]
+      [(cons (? integer? z) zxs-rest)
+       (if (zero? z)
+           (loop h zxs-rest)
+           (loop (hash-set h CONST (+ (hash-ref h CONST 0) z)) zxs-rest))]
+      [(cons (list z x) zxs-rest)
+       (if (zero? z)
+           (loop h zxs-rest)
+           (loop (hash-set h x (+ (hash-ref h x 0) z)) zxs-rest))])))
 
 ; lexp-scalar
-(define (lexp-scalar exp var [not-in-val #f])
-  (hash-ref exp var not-in-val))
+(define/contract (lexp-scalar exp var)
+  (-> lexp? any/c integer?)
+  (hash-ref exp var 0))
+
+;; lexp-equal?
+(define/contract (lexp-equal? l1 l2)
+  (-> lexp? lexp? boolean?)
+  (for/and ([key (hash-keys l1)])
+    (= (lexp-scalar l1 key)
+       (lexp-scalar l2 key))))
 
 (module+ test
-  (check-equal? (lexp-scalar (lexp (1 'x) (42 'y) (1 #f)) 'y) 42)
-  (check-equal? (lexp-scalar (lexp (1 'x) (42 'y) (1 #f)) #f) 1)
-  (check-equal? (lexp-scalar (lexp (1 'x) (42 'y) (1 #f)) 'q) #f))
+  (check-equal? (lexp 0) (lexp 0 '(0 x) '(0 y) '(0 z)))
+  
+  (check-equal? (lexp-scalar (lexp 1 '(1 x) '(42 y)) 'y) 42)
+  (check-equal? (lexp-scalar (lexp 1 '(1 x) '(42 y)) CONST) 1)
+  (check-equal? (lexp-scalar (lexp 0 '(1 x) '(42 y)) 'q) 0))
 
 
-(define (lexp-vars exp)
+(define/contract (lexp-vars exp)
+  (-> lexp? list?)
   (hash-keys exp))
 
 (module+ test
-  (check-not-false (let ([vars (lexp-vars (lexp (42 'x) (17 #f)))])
+  (check-not-false (let ([vars (lexp-vars (lexp 17 '(42 x)))])
                      (and (= 2 (length vars))
                           (member 'x vars)
-                          (member #f vars)))))
+                          (member CONST vars)))))
 
 ; lexp-scale
-(define (lexp-scale exp a)
+(define/contract (lexp-scale exp a)
+  (-> lexp? integer? lexp?)
   (for/hash ([x (lexp-vars exp)])
     (values x (* a (lexp-scalar exp x)))))
 
-; lexp-remove
-(define (lexp-remove exp var)
-  (hash-remove exp var))
-
 (module+ test
-  (check-equal? (lexp-remove (lexp (42 'x) (17 #f)) 'x)
-                (lexp (17 #f))))
+  (check-equal? (lexp-set (lexp 17 '(42 x)) 'x 0)
+                (lexp 17)))
 
 ; lexp-set
-(define (lexp-set exp var scalar)
-  (hash-set exp var scalar))
+; excludes items set to 0
+(define/contract (lexp-set exp var scalar)
+  (-> lexp? any/c integer? lexp?)
+  (if (zero? scalar)
+      (hash-remove exp var)
+      (hash-set exp var scalar)))
 
 (module+ test 
-  (check-equal? (lexp-set (lexp (17 #f)) 'x 42)
-                (lexp (42 'x) (17 #f)))
-  (check-equal? (lexp-set (lexp (2 'x) (17 #f)) 'x 42)
-                (lexp (42 'x) (17 #f))))
-
-; lexp-size
-(define (lexp-size exp)
-  (hash-count exp))
-
-(module+ test
-  (check-equal? (lexp-size (lexp (42 'x) (17 #f)))
-                2))
+  (check-true (lexp-equal? (lexp-set (lexp 17) 'x 42)
+                           (lexp 17 '(42 x))))
+  (check-true (lexp-equal? (lexp-set (lexp 17 '(2 x)) 'x 42)
+                           (lexp 17 '(42 x)))))
 
 ; lexp-empty?
-(define (lexp-empty? exp)
-  (hash-empty? exp))
+(define/contract (lexp-zero? exp)
+  (-> lexp? boolean?)
+  (lexp-equal? exp
+               (lexp 0)))
 
 (module+ test
-  (check-false (lexp-empty? (lexp (42 'x) (17 #f))))
-  (check-not-false (lexp-empty? (lexp))))
+  (check-false (lexp-zero? (lexp 17 '(42 x))))
+  (check-false (lexp-zero? (lexp 17)))
+  (check-not-false (lexp-zero? (lexp 0))))
 
 ; lexp-subtract
-(define (lexp-subtract exp1 exp2)
+(define/contract (lexp-subtract exp1 exp2)
+  (-> lexp? lexp? lexp?)
   (define vars (lexp-vars exp2))
-  (for/fold ([exp exp1]) ([x vars])
-    (let* ([s1 (lexp-scalar exp1 x 0)]
-           [s2 (lexp-scalar exp2 x 0)]
+    (for/fold ([exp exp1]) ([x vars])
+    (let* ([s1 (lexp-scalar exp1 x)]
+           [s2 (lexp-scalar exp2 x)]
            [snew (- s1 s2)])
-      (if (zero? snew)
-          (lexp-remove exp x)
-          (lexp-set exp x snew)))))
+      (lexp-set exp x snew))))
 
 (module+ test
-  (check-equal? (lexp-subtract (lexp (2 'x) (3 'y) (-1 #f))
-                               (lexp (2 'x) (-1 #f) (42 'z)))
-                (lexp (3 'y) (-42 'z)))
-  (check-equal? (lexp-subtract (lexp (0 #f))
-                               (lexp (2 'x) (-1 #f) (42 'z)))
-                (lexp (-2 'x) (-42 'z) (1 #f))))
+  (check-true (lexp-equal? (lexp-subtract (lexp -1 '(2 x) '(3 y))
+                                          (lexp -1 '(2 x) '(42 z)))
+                           (lexp 0 '(3 y) '(-42 z))))
+  (check-true (lexp-equal? (lexp-subtract (lexp 0)
+                                         (lexp -1 '(2 x) '(42 z)))
+                           (lexp 1 '(-2 x) '(-42 z)))))
 
 ; lexp-has-var?
-(define (lexp-has-var? exp x)
-  (hash-has-key? exp x))
+(define/contract (lexp-has-var? exp x)
+  (-> lexp? any/c boolean?)
+  (not (zero? (lexp-scalar exp x))))
 
 (module+ test
-  (check-false (lexp-has-var? (lexp (42 'x) (17 #f)) 'y))
-  (check-not-false (lexp-has-var? (lexp (42 'x) (17 #f)) 'x)))
+  (check-false (lexp-has-var? (lexp 17 '(42 x)) 'y))
+  (check-not-false (lexp-has-var? (lexp 17 '(42 x)) 'x)))
 
 ; lexp-add1
 (define (lexp-add1 exp)
-  (lexp-set exp #f (add1 (lexp-scalar exp #f 0))))
+  (-> lexp? lexp?)
+  (lexp-set exp CONST (add1 (lexp-scalar exp CONST))))
 
 (module+ test 
-  (check-equal? (lexp-add1 (lexp)) (lexp (1 #f)))
-  (check-equal? (lexp-add1 (lexp (1 #f) (5 'x))) 
-                (lexp (2 #f) (5 'x))))
+  (check-equal? (lexp-add1 (lexp 0)) (lexp 1))
+  (check-true (lexp-equal? (lexp-add1 (lexp 1 '(5 x))) 
+                           (lexp 2 '(5 x)))))
 
 ; lexp-subst
 (define (lexp-subst exp new old)
+  (-> lexp? any/c any/c lexp?)
   (if (lexp-has-var? exp old)
-      (lexp-set (lexp-remove exp old) new (lexp-scalar exp old))
+      (lexp-set (lexp-set exp old 0) new (lexp-scalar exp old))
       exp))
 
 (module+ test
-  (check-equal? (lexp-subst (lexp (1 #f) (5 'x)) 'y 'x) 
-                (lexp (1 #f) (5 'y))))
+  (check-true (lexp-equal? (lexp-subst (lexp 1 '(5 x) '(42 z)) 'y 'x) 
+                             (lexp 1 '(5 y) '(42 z)))))
 
 
 ;**********************************************************************
@@ -206,32 +216,53 @@
             (values l r)))
 
 ; leq-exps
-(define (leq-exps ineq)
+(define/contract (leq-exps ineq)
+  (-> leq? (values lexp? lexp?))
   (values (leq-lhs ineq) (leq-rhs ineq)))
 
+;; leq-equal?
+(define/contract (leq-equal? l1 l2)
+  (-> leq? leq? boolean?)
+  (define-values (l1lhs l1rhs) (leq-exps l1))
+  (define-values (l2lhs l2rhs) (leq-exps l2))
+  (and (lexp-equal? l1lhs l2lhs)
+       (lexp-equal? l1rhs l2rhs)))
+
+
 ; leq-contains-var
-(define (leq-contains-var? ineq var)
+(define/contract (leq-contains-var? ineq var)
+  (-> leq? any/c boolean?)
   (or (lexp-has-var? (leq-lhs ineq) var)
       (lexp-has-var? (leq-rhs ineq) var)))
 
+(define (union l1 l2)
+  (cond
+    [(empty? l1) l2]
+    [(member (first l1) l2)
+     (union (rest l1) l2)]
+    [else
+     (union (rest l1) (cons (first l1) l2))]))
+
 ; leq-vars
-(define (leq-vars ineq)
-  (remove-duplicates (append (lexp-vars (leq-lhs ineq))
-                             (lexp-vars (leq-rhs ineq)))))
+(define/contract (leq-vars ineq)
+  (-> leq? list?)
+  (union (lexp-vars (leq-lhs ineq))
+         (lexp-vars (leq-rhs ineq))))
 
 ; leq-negate
 ; ~ (l1 <= l2) ->
 ; l2 <= 1 + l1 
 ; (obviously this is valid for integers only)
 (define (leq-negate ineq)
+  (-> leq? leq?)
   (leq (lexp-add1 (leq-rhs ineq))
        (leq-lhs ineq)))
 
 (module+ test
-  (check-equal? (leq-negate (leq (lexp (1 'x))
-                                 (lexp (1 'y))))
-                (leq (lexp (1 'y) (1 #f))
-                     (lexp (1 'x)))))
+  (check-true (leq-equal? (leq-negate (leq (lexp 0 '(1 x))
+                                            (lexp 0 '(1 y))))
+                           (leq (lexp 1 '(1 y))
+                                (lexp 0 '(1 x))))))
 ; leq-isolate-var
 ; converts leq with x into either:
 ;  1) ax <= by + cz + ...
@@ -240,56 +271,57 @@
 ;  where a is a positive integer and x is on at most 
 ;  one side of the inequality
 (define (leq-isolate-var ineq x)
+  (-> leq? any/c)
   (define-values (lhs rhs) (leq-exps ineq))
   ; ... + ax + .... <= ... + bx + ...
-  (define a (lexp-scalar lhs x 0))
-  (define b (lexp-scalar rhs x 0))
+  (define a (lexp-scalar lhs x))
+  (define b (lexp-scalar rhs x))
   (cond
     [(and a b (= a b))
-     (leq (lexp-remove lhs x)
-          (lexp-remove rhs x))]
+     (leq (lexp-set lhs x 0)
+          (lexp-set rhs x 0))]
     [(and a b (< a b))
-     (leq (lexp-subtract (lexp-remove lhs x)
-                         (lexp-remove rhs x))
-          (lexp ((- b a) x)))]
+     (leq (lexp-set (lexp-subtract lhs rhs) x 0)
+          (lexp `(,(- b a) ,x)))]
     [(and a b (> a b))
-     (leq (lexp ((- a b) x))
-          (lexp-subtract (lexp-remove rhs x)
-                         (lexp-remove lhs x)))]
+     (leq (lexp `(,(- a b) ,x))
+          (lexp-subtract (lexp-set rhs x 0)
+                         (lexp-set lhs x 0)))]
     [else
      ineq]))
 
 ; x lhs
 (module+ test
-  (check-equal? (leq-isolate-var (leq (lexp (3 'x) (2 'z) (5 'y))
-                                      (lexp (1 'x) (1 'z)))
+  (check-equal? (leq-isolate-var (leq (lexp '(3 x) '(2 z) '(5 y))
+                                      (lexp '(1 x) '(1 z)))
                                  'x)
-                (leq (lexp (2 'x)) (lexp (-5 'y) (-1 'z))))
-
-                                        ; x rhs
-  (check-equal? (leq-isolate-var (leq (lexp (3 'x) (2 'z) (5 'y))
-                                      (lexp (1 'z) (33 'x)))
+                (leq (lexp '(2 x)) (lexp '(-5 y) '(-1 z))))
+  
+  ;; x rhs
+  (check-equal? (leq-isolate-var (leq (lexp '(3 x) '(2 z) '(5 y))
+                                      (lexp '(1 z) '(33 x)))
                                  'x)
-                (leq (lexp (1 'z) (5 'y)) (lexp (30 'x))))
-                                        ; x eq
-  (check-equal? (leq-isolate-var (leq (lexp (42 'x) (2 'z) (5 'y))
-                                      (lexp (42 'x) (1 'z)))
+                (leq (lexp '(1 z) '(5 y)) (lexp '(30 x))))
+  ;; x eq
+  (check-equal? (leq-isolate-var (leq (lexp '(42 x) '(2 z) '(5 y))
+                                      (lexp '(42 x) '(1 z)))
                                  'x)
-                (leq (lexp (2 'z) (5 'y))
-                     (lexp (1 'z))))
-                                        ; no x
-  (check-equal? (leq-isolate-var (leq (lexp (2 'z) (5 'y))
-                                      (lexp (1 'z)))
+                (leq (lexp '(2 z) '(5 y))
+                     (lexp '(1 z))))
+  ;; no x
+  (check-equal? (leq-isolate-var (leq (lexp '(2 z) '(5 y))
+                                      (lexp '(1 z)))
                                  'x)
-                (leq (lexp (2 'z) (5 'y))
-                     (lexp (1 'z))))
+                (leq (lexp '(2 z) '(5 y))
+                     (lexp '(1 z))))
 
                                         ; x mix
-  (check-equal? (leq-isolate-var (leq (lexp (2 'x) (4 'y) (1 #f))
-                                      (lexp (2 'y))) 'x)
-                (leq (lexp (2 'x))
-                     (lexp (-1 #f) (-2 'y)))))
+  (check-equal? (leq-isolate-var (leq (lexp '(2 x) '(4 y) 1)
+                                      (lexp '(2 y))) 'x)
+                (leq (lexp '(2 x))
+                     (lexp -1 '(-2 y)))))
 
+;; BOOKMARK
 
 ; leq-join
 ; takes a pair a1x <= l1 and l2 <= a2x
