@@ -52,9 +52,12 @@
 ; For negation we utilize the equivalence ~(a <= b) <-> 1 + b <= a
 ; since we are concerned with integer solutions.
 
-(require racket/list racket/bool racket/contract racket/match)
+(require racket/list racket/bool 
+         racket/contract racket/match
+         racket/format)
 (module+ test
     (require rackunit))
+
 (provide (all-defined-out))
 
 ;**********************************************************************
@@ -66,7 +69,9 @@
 (struct constant () #:transparent)
 (define CONST (constant))
 
-(define lexp? hash?)
+(define lexp? 
+  (λ (a) (and (hash? a)
+              (andmap integer? (hash-values a)))))
 
 (define/contract (lexp . terms)
   (->* () #:rest (listof (or/c integer? (list/c integer? any/c))) lexp?)
@@ -85,8 +90,8 @@
            (loop h zxs-rest)
            (loop (hash-update h x (λ (c) (+ c z)) 0) zxs-rest))])))
 
-; lexp-scalar
-(define/contract (lexp-scalar exp var)
+; lexp-coefficient
+(define/contract (lexp-coefficient exp var)
   (-> lexp? any/c integer?)
   (hash-ref exp var 0))
 
@@ -99,15 +104,15 @@
 (define/contract (lexp-equal? l1 l2)
   (-> lexp? lexp? boolean?)
   (for/and ([key (hash-keys l1)])
-    (= (lexp-scalar l1 key)
-       (lexp-scalar l2 key))))
+    (= (lexp-coefficient l1 key)
+       (lexp-coefficient l2 key))))
 
 (module+ test
   (check-equal? (lexp 0) (lexp 0 '(0 x) '(0 y) '(0 z)))
   
-  (check-equal? (lexp-scalar (lexp 1 '(1 x) '(42 y)) 'y) 42)
+  (check-equal? (lexp-coefficient (lexp 1 '(1 x) '(42 y)) 'y) 42)
   (check-equal? (lexp-constant (lexp 1 '(1 x) '(42 y))) 1)
-  (check-equal? (lexp-scalar (lexp 0 '(1 x) '(42 y)) 'q) 0))
+  (check-equal? (lexp-coefficient (lexp 0 '(1 x) '(42 y)) 'q) 0))
 
 
 (define/contract (lexp-vars exp)
@@ -124,7 +129,7 @@
 (define/contract (lexp-scale exp a)
   (-> lexp? integer? lexp?)
   (for/hash ([x (cons CONST (lexp-vars exp))])
-    (values x (* a (lexp-scalar exp x)))))
+    (values x (* a (lexp-coefficient exp x)))))
 
 (module+ test
   (check-equal? (lexp-set (lexp 17 '(42 x)) 'x 0)
@@ -154,7 +159,7 @@
   (check-true (lexp-equal? (lexp-set-constant (lexp 17 '(2 x)) 42)
                            (lexp 42 '(2 x)))))
 
-; lexp-empty?
+; lexp-zero?
 (define/contract (lexp-zero? exp)
   (-> lexp? boolean?)
   (lexp-equal? exp
@@ -172,10 +177,15 @@
     (for/fold ([exp (lexp-set-constant exp1 (- (lexp-constant exp1)
                                                (lexp-constant exp2)))]) 
               ([x vars])
-    (let* ([s1 (lexp-scalar exp1 x)]
-           [s2 (lexp-scalar exp2 x)]
+    (let* ([s1 (lexp-coefficient exp1 x)]
+           [s2 (lexp-coefficient exp2 x)]
            [snew (- s1 s2)])
       (lexp-set exp x snew))))
+
+;; lexp-add
+(define/contract (lexp-add exp1 exp2)
+  (-> lexp? lexp? lexp?)
+  (lexp-subtract exp1 (lexp-scale exp2 -1)))
 
 (module+ test
   (check-true (lexp-equal? (lexp-subtract (lexp -1 '(2 x) '(3 y))
@@ -188,14 +198,14 @@
 ; lexp-has-var?
 (define/contract (lexp-has-var? exp x)
   (-> lexp? any/c boolean?)
-  (not (zero? (lexp-scalar exp x))))
+  (not (zero? (lexp-coefficient exp x))))
 
 (module+ test
   (check-false (lexp-has-var? (lexp 17 '(42 x)) 'y))
   (check-not-false (lexp-has-var? (lexp 17 '(42 x)) 'x)))
 
 ; lexp-add1
-(define (lexp-add1 exp)
+(define/contract (lexp-add1 exp)
   (-> lexp? lexp?)
   (lexp-set exp CONST (add1 (lexp-constant exp))))
 
@@ -205,16 +215,36 @@
                            (lexp 2 '(5 x)))))
 
 ; lexp-subst
-(define (lexp-subst exp new old)
+(define/contract (lexp-subst exp new old)
   (-> lexp? any/c any/c lexp?)
   (if (lexp-has-var? exp old)
-      (lexp-set (lexp-set exp old 0) new (lexp-scalar exp old))
+      (lexp-set (lexp-set exp old 0) new (lexp-coefficient exp old))
       exp))
 
 (module+ test
   (check-true (lexp-equal? (lexp-subst (lexp 1 '(5 x) '(42 z)) 'y 'x) 
                              (lexp 1 '(5 y) '(42 z)))))
 
+;; lexp->string
+(define/contract (lexp->string e)
+  (-> lexp? string?)
+  (define vars (lexp-vars e))
+  (define const (lexp-constant e))
+  (define term->string 
+    (λ (x) (string-append (if (= 1 (lexp-coefficient e x))
+                              ""
+                              (number->string (lexp-coefficient e x)))
+                           "(" (~a x) ")")))
+  (cond
+    [(empty? vars) (number->string const)]
+    [(zero? const)
+     (for/fold ([str (term->string (first vars))])
+               ([var (rest vars)])
+       (string-append str " + " (term->string var)))]
+    [else
+     (for/fold ([str (number->string const)])
+               ([var vars])
+       (string-append str " + " (term->string var)))]))
 
 ;**********************************************************************
 ; Linear Inequalities  (leq)
@@ -289,8 +319,8 @@
   (-> leq? any/c)
   (define-values (lhs rhs) (leq-exps ineq))
   ; ... + ax + .... <= ... + bx + ...
-  (define a (lexp-scalar lhs x))
-  (define b (lexp-scalar rhs x))
+  (define a (lexp-coefficient lhs x))
+  (define b (lexp-coefficient rhs x))
   (cond
     [(and a b (= a b))
      (leq (lexp-set lhs x 0)
@@ -347,18 +377,18 @@
   (cond
     ; leq1: a1x <= l1
     ; leq2: l2 <= a2x
-    [(and (lexp-scalar lhs1 x) (zero? (lexp-scalar rhs1 x))
-          (lexp-scalar rhs2 x) (zero? (lexp-scalar lhs2 x)))
-     (let ([a1 (lexp-scalar lhs1 x)]
-           [a2 (lexp-scalar rhs2 x)])
+    [(and (lexp-coefficient lhs1 x) (zero? (lexp-coefficient rhs1 x))
+          (lexp-coefficient rhs2 x) (zero? (lexp-coefficient lhs2 x)))
+     (let ([a1 (lexp-coefficient lhs1 x)]
+           [a2 (lexp-coefficient rhs2 x)])
        (leq (lexp-scale lhs2 a1)
             (lexp-scale rhs1 a2)))]
     ; leq1: l1 <= a1x
     ; leq2: a2x <= l2
-    [(and (lexp-scalar rhs1 x) (zero? (lexp-scalar lhs1 x))
-          (lexp-scalar lhs2 x) (zero? (lexp-scalar rhs2 x)))
-     (let ([a1 (lexp-scalar rhs1 x)]
-           [a2 (lexp-scalar lhs2 x)])
+    [(and (lexp-coefficient rhs1 x) (zero? (lexp-coefficient lhs1 x))
+          (lexp-coefficient lhs2 x) (zero? (lexp-coefficient rhs2 x)))
+     (let ([a1 (lexp-coefficient rhs1 x)]
+           [a2 (lexp-coefficient lhs2 x)])
        (leq (lexp-scale lhs1 a2)
             (lexp-scale rhs2 a1)))]
     [else
@@ -379,8 +409,8 @@
 (define/contract (leq-trivially-valid? ineq)
   (-> (and/c leq? (λ (ineq) (empty? (leq-vars ineq))))
       boolean?)
-  (define lhs-val (lexp-scalar (leq-lhs ineq) CONST))
-  (define rhs-val (lexp-scalar (leq-rhs ineq) CONST))
+  (define lhs-val (lexp-coefficient (leq-lhs ineq) CONST))
+  (define rhs-val (lexp-coefficient (leq-rhs ineq) CONST))
   (<= lhs-val rhs-val))
 
 
@@ -400,6 +430,11 @@
                 (leq (lexp '(1 x2))
                      (lexp '(1 y2)))))
 
+(define/contract (leq->string ineq)
+  (-> leq? string?)
+  (define-values (lhs rhs) (leq-exps ineq))
+  (string-append (lexp->string lhs) " ≤ " (lexp->string rhs)))
+
 ;**********************************************************************
 ; Systems of Integer Linear Inequalities (sli)
 ; a1x1 + a2x2 + ... <= b1y1 + b2y2 + ...
@@ -408,7 +443,18 @@
 ;   (and related operations)
 ;**********************************************************************
 
-; system-vars
+(define/contract (sli->string sli)
+  (-> (listof leq?) string?)
+  (string-append 
+   (cond
+     [(empty? sli) "("]
+     [else
+      (for/fold ([str (leq->string (first sli))])
+                ([ineq (rest sli)])
+        (string-append str " ∧ "(leq->string (first sli))))])
+   ")"))
+
+; sli-vars
 (define/contract (sli-vars sli)
   (-> (listof leq?) list?)
   (foldl union empty (map leq-vars sli)))

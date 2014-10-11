@@ -8,13 +8,13 @@
 @interaction-eval[#:eval fme-eval (require "main.rkt")]
 
 @title{Fourier-Motzkin Elimination for Integer Systems}
-@author+email["Andrew Kent" "andmkent@indiana.edu"]}
+@author+email["Andrew Kent" "andmkent@indiana.edu"]
 
 @defmodule[fme]
 
-This package is a simple implementation of the Fourier-Motzkin elimination 
-method. It reasons about systems of linear inequalties (SLIs) and currently
-has two primary functions:
+This package is a simple functional, algebraic implementation of the Fourier-Motzkin elimination 
+method (as opposed to the more common matrix-based approach). 
+It reasons about systems of linear inequalties (SLIs) and currently has two primary functions:
 
 @itemlist[#:style 'ordered
                   @item{Decide the satisfiability of a SLI (over reals).}
@@ -30,124 +30,125 @@ simple linear combinations of the form ax + by + ... + c.
 @section{Some Quick Examples}
 
 @examples[#:eval fme-eval
-                 (let ([assumptions (sli (leq (lexp (7 'x))
-                                              (lexp (29 #f))))]
-                       [goal (leq (lexp (1 'x)) (lexp (4 #f)))])
-                   (if (sli-proves-leq? assumptions goal)
-                       (printf "7x ≤ 29\nimplies\nx ≤ 4\n")
-                       (printf "7x ≤ 29 \ndoesn't imply\n x ≤ 4")))
+                 (let ([assumptions (list (leq (lexp '(7 x))
+                                               (lexp 29)))]
+                       [goal (leq (lexp '(1 x)) 
+                                  (lexp 4))])
+                   (begin (printf "Does ~a imply ~a?" 
+                                  (sli->string assumptions)
+                                  (leq->string goal))
+                          (sli-proves-leq? assumptions goal)))
                  
-                 (let ([assumptions (sli (leq (lexp (7 'x))
-                                              (lexp (29 #f))))]
-                       [goal (leq (lexp (1 'x)) (lexp (3 #f)))])
-                   (if (sli-proves-leq? assumptions goal)
-                       (printf "7x ≤ 29 \nimplies\nx ≤ 3")
-                       (printf "7x ≤ 29 \ndoesn't imply\nx ≤ 3")))
+                 (let ([assumptions (list (leq (lexp '(7 x))
+                                               (lexp 29)))]
+                       [goal (leq (lexp '(1 x)) (lexp 3))])
+                   (begin (printf "Does ~a imply ~a?" 
+                                  (sli->string assumptions)
+                                  (leq->string goal))
+                          (sli-proves-leq? assumptions goal)))
                  
-                 (let ([assumptions (sli (leq (lexp (1 'x) (1 'y))
-                                              (lexp (1 'z)))
-                                         (leq (lexp)
-                                              (lexp (1 'y)))
-                                         (leq (lexp)
-                                              (lexp (1 'x))))]
-                       [goals (sli (leq (lexp (1 'x))
-                                        (lexp (1 'z)))
-                                   (leq (lexp (1 'y))
-                                        (lexp (1 'z)))
-                                   (leq (lexp (0 #f))
-                                        (lexp (1 'z))))])
-                   (if (sli-proves-sli? assumptions goals)
-                       (printf "x + y ≤ z ∧ 0 ≤ y ∧ 0 ≤ x \nimplies\nx ≤ z ∧ y ≤ z")
-                       (printf "x + y ≤ z ∧ 0 ≤ y ∧ 0 ≤ x \ndoesn't imply\nx ≤ z ∧ y ≤ z ∧ 0 ≤ z")))]
-
-
+                 (let ([assumptions (list (leq (lexp '(1 x) '(1 y))
+                                               (lexp '(1 z)))
+                                          (leq (lexp)
+                                               (lexp '(1 y)))
+                                          (leq (lexp)
+                                               (lexp '(1 x))))]
+                       [goals (list (leq (lexp '(1 x))
+                                        (lexp '(1 z)))
+                                   (leq (lexp '(1 y))
+                                        (lexp '(1 z)))
+                                   (leq (lexp)
+                                        (lexp '(1 z))))])
+                   (begin (printf "Does ~a \n imply \n~a?" 
+                                  (sli->string assumptions)
+                                  (sli->string goals))
+                          (sli-proves-sli? assumptions goals)))]
 
 @section{Linear Expressions}
 
- @defform[(lexp (a x) ...)
-          #:contracts ([a exact-integer?]
-                       [x any/c])]{
-   Returns a linear expression of the form ax+ ... where a is the scalar 
-   coefficient and x is the variable. For constants, use #f as the variable.
-   (Currently we merely represent these with a hash mapping variables to coefficients)}
+@defproc[(lexp [term (or/c integer?
+                           (list integer? any/c))] ...)
+         boolean?]{
+Builds a linear expression from the given terms. Each term is either
+a constant @racket[integer?] or a @racket[list] of length two representing 
+an integer coefficient and it's associated variable.}
 
 @defproc[(lexp? [e any/c])
          boolean?]{
-  Tests if argument is a linear expression.
-}
+  Returns @racket[#t] if @racket[e] is a linear expression.}
 
-@defproc[(lexp-scalar [e lexp?] [x any/c] [default any/c])
-         any/c]{
+@defproc[(lexp-coefficient [e lexp?] [x any/c])
+         integer?]{
   Returns the scalar coefficient for the variable x in e, 
-  or default if x is not present.
-  @racket[#f] is used as the variable for constants.
-}
+  returning @racket[0] if x is not present.}
+
+
+@defproc[(lexp-constant [e lexp?])
+         integer?]{
+  Returns the scalar constant for @racket[e].}
 
 @defproc[(lexp-vars [e lexp?])
          (listof any/c)]{
-  Returns a list of the variables in this linear expression (in no particular order).
-  @racket[#f] is included if the expression has a constant.
-}
+  Returns a list of the variables in this linear expression (in no particular order).}
 
 @defproc[(lexp-has-var? [e lexp?] [x any/c])
          boolean?]{
-  Returns @racket[#t] if x is in e, else @racket[#f].
+  Equivalent to @racket[(not (zero? (lexp-coefficient e x)))].
 }
 
-@defproc[(lexp-scale [e lexp?] [a exact-integer])
+@defproc[(lexp-scale [e lexp?] [n integer?])
          lexp?]{
-  Multiplies all scalar coefficients in e by a.
+  Returns an @racket[lexp] equivalent to multiplying all scalars (coefficients and constants) in 
+  @racket[e] by @racket[n].
 }
 
-@defproc[(lexp-remove [e lexp?] [x any/c])
+
+@defproc[(lexp-set [e lexp?] [x any/c] [n integer?])
          lexp?]{
-  Removes the term with the variable x from the linear expression e (no-op if x not present).
+  Returns a linear expression equal to @racket[e] 
+  except the coefficient for 
+  @racket[x] is @racket[n].
 }
 
-@defproc[(lexp-set [e lexp?] [x any/c] [a exact-integer?])
+@defproc[(lexp-set-constant [e lexp?] [n integer?])
          lexp?]{
-  Changes the coefficient for x to a (adding x if it is not in the linear equation).
+Returns a linear expression equal to @racket[e] but with the constant set to @racket[n].
 }
 
-@defproc[(lexp-size [e lexp?])
-         exact-nonnegative-integer?]{
-  Returns the number of terms in the linear expression 
-  (i.e. number of unique variables +1 if a constant is present).
-}
-
-@defproc[(lexp-empty? [e lexp?])
+@defproc[(lexp-zero? [e lexp?])
          boolean?]{
-  Reports if the linear expression is entirely empty (i.e. equal to 0).
+  Returns @racket[#t] if the linear expression is mathematically equivalent to @racket[0].
 }
-
 
 @defproc[(lexp-subtract [e1 lexp?] [e2 lexp?])
          lexp?]{
-  Returns the result of e1 - e2. For example (shown below), 
+  Returns the result of @racket[e1] - @racket[e1]. For example (shown below), 
   (2x + 3y - 1) - (2x + 42z - 1) = 3y - 42z
   
   @examples[#:eval fme-eval
-                   (lexp-subtract (lexp (2 'x) (3 'y) (-1 #f))
-                             (lexp (2 'x) (-1 #f) (42 'z)))]
-Note that lexp's use hash tables for their representation, so their values are
-printed in the regular hash form.}
+                   (lexp->string (lexp-subtract (lexp '(2 x) '(3 y) -1)
+                                                (lexp '(2 x) -1 '(42 z))))]}
+
+@defproc[(lexp-add [e1 lexp?] [e2 lexp?])
+         lexp?]{
+  Equivalent to @racket[(lexp-subtract e1 (lexp-scale e2 -1))]}
+
 
 @defproc[(lexp-add1 [e lexp?])
          lexp?]{
- Adds 1 to the constant in e.
+Equivalent to @racket[(lexp-set-constant e (add1 (lexp-constant e)))].
  
  @examples[#:eval fme-eval
-                  (equal? (lexp-add1 (lexp (1 #f) (5 'x))) 
-                          (lexp (2 #f) (5 'x)))]
+                  (lexp->string (lexp-add1 (lexp 1 '(5 x))))]
 }
 
 @defproc[(lexp-subst [e lexp?] [new any/c] [old any/c])
          lexp?]{
- Substitutes the new variable in for the old.
+Returns a linear expression equal to @racket[e] but with all occurrences of
+@racket[old] replaced with @racket[new].
  
  @examples[#:eval fme-eval
-                  (equal? (lexp-subst (lexp (1 #f) (5 'x)) 'y 'x) 
-                          (lexp (1 #f) (5 'y)))]
+                  (lexp->string (lexp-subst (lexp 1 '(5 x)) 'y 'x))]
 }
 
 
@@ -163,33 +164,28 @@ printed in the regular hash form.}
 
 @defproc[(lexp-contains-var? [ineq leq?] [x any/c])
          boolean?]{
- Returns @racket[#t] if x is in the lhs or rhs of ineq, else @racket[#f].}
+ Returns @racket[#t] if @racket[x] is in the lhs or rhs of @racket[ineq], else @racket[#f].}
  
 @defproc[(leq-negate [ineq leq?])
          leq?]{
- Negates ineq based on *integer math*, e.g. not (x <= y) implies (y+1 <= x).}
+ Negates @racket[ineq] based on integer arithmetic (e.g. not (x ≤ y) implies (y+1 ≤ x)).}
 
 @defproc[(leq-isolate-var [ineq leq?] [x any/c])
          leq?]{
- Converts an inequality into either (ax <= by + cz + ...) or (by + cz + ... <= ax)
- such that a is a positive integer and x appears on at most one side of the inequality.
- If x is not in ineq, it is a no-op.}
+ Converts an inequality into either (a@racket[x] ≤ by + cz + ...) or (by + cz + ... ≤ a@racket[x])
+ such that a is a positive integer and @racket[x] appears on at most one side of the inequality.
+ If @racket[x] is not in ineq, it is a no-op.}
 
 @defproc[(leq-join [ineq1 leq?] [ineq2 leq?] [x any/c])
          leq?]{
- Takes a pair of inequalities of the forms (a1x <= l1) and (l2 <= a2x)
- and returns a2l1 <= a1l2.}
+ Takes a pair of inequalities of the forms (a1@racket[x] ≤ l1) and (l2 ≤ a2@racket[x])
+ and returns a2l1 ≤ a1l2.}
 
 @defproc[(leq-trivially-valid? [ineq1 leq?] [ineq2 leq?])
          boolean]{
- Checks if ineq1 <= ineq2 is trivially true (i.e. they must both be constants).}
+ Checks if (@racket[ineq1] ≤ @racket[ineq2]) is trivially true (i.e. they must both be constants).}
 
 @section{Systems of Linear Inequalities}
-
-@defproc[(sli [ineq leq?] ...)
-         (listof leq?)]{
-  Constructor for a system of linear inequalities. Currently just wraps @racket[list].
-}
 
 @defproc[(sli-vars [sys (listof leq?)])
          (listof any/c)]{
@@ -199,44 +195,40 @@ printed in the regular hash form.}
 
 @defproc[(sli-partition [sys (listof leq?)] [x any/c])
          (values (listof leq?) (listof leq?) (listof leq?))]{
-  3-way partitions the system of inequalities based on how leq-isolate-var would 
-  re-order the inequality in terms of x:
-  @itemlist[@item{Inequalities of the form (ax <= by + cz + ...)}
-             @item{Inequalities of the form (by + cz + ... <= ax)}
-             @item{Inequalities which do not contain x}
+  3-way partitions @racket[sys] based on how leq-isolate-var would 
+  re-order the inequality in terms of @racket[x]:
+  @itemlist[@item{Inequalities of the form (a@racket[x] ≤ by + cz + ...)}
+             @item{Inequalities of the form (by + cz + ... ≤ a@racket[x])}
+             @item{Inequalities which do not contain @racket[x]}
              #:style 'ordered]
 }
 
 @defproc[(sli-elim-var [sys (listof leq?)] [x any/c])
          (listof leq?)]{
-  Reduces the system of linear inequalities, performing the proper algebraic
-  eliminations (see sli-partition and leq-join) such that the system no longer
-  contains x but maintains the same set of satisfying solutions with respect to
-  the remaining variables.
+  Returns an SLI without @racket[x] such that it possesses the same set 
+  of satisfying solutions with respect to the remaining variables.
+                        
   
-  This elimination is sound for *real number* solutions. (Since we are mainly
-  concerned with unsatisfiability, however, this is not a huge issue, since if
-  a system is unsatisfiable for reals it is also unsatisfiable for integers, thus
-  this is also a sound method for checking unsatisfiability of integer problems
-  as well).
+  It relies on @racket[sli-partition] and @racket[leq-join].
 }
 
 @defproc[(sli-satisfiable? [sys (listof leq?)])
          boolean?]{
   Reports if a given system of linear inequalities is satisfiable 
-  (i.e. does a real number solution) exist.
+  (i.e. does a real number solution exist).
 }
 
 @defproc[(sli-proves-leq? [sys (listof leq?)] [ineq leq?])
          boolean?]{
-  Reports if a given system of linear inequalities, sys, implies
-  the constraint ineq (this is valid for the integer domain of
-  inequalities only, since we utilize integer inequality negation).
+  Reports if a given system of linear inequalities, @racket[sys], implies
+  the constraint @racket[ineq] (this is valid for the integer domain of
+  inequalities only, since we utilize integer inequality negation
+  and then test for satisfiability).
 }
 
 @defproc[(sli-proves-sli? [sys1 (listof leq?)] [sys2 (listof leq?)])
          boolean?]{
-  Reports if sys1 implies all of the constraints contained in sys2
+  Reports if @racket[sys1] implies all of the constraints contained in @racket[sys2]
   (again, this is valid for the integer domain of
   inequalities only, since we utilize integer inequality negation).
 }
