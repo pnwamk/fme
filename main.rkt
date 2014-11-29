@@ -71,17 +71,20 @@
 
 (define lexp? 
   (λ (a) (and (hash? a)
-              (andmap integer? (hash-values a)))))
+              (andmap exact-integer? (hash-values a)))))
 
-(define/contract (lexp . terms)
-  (->* () #:rest (listof (or/c integer? (list/c integer? any/c))) lexp?)
+(define-syntax-rule (lexp t ...)
+  (list->lexp (list t ...)))
+
+(define/contract (list->lexp terms)
+  (-> (listof (or/c exact-integer? (list/c exact-integer? any/c))) lexp?)
   (define coef first) 
   (define var second)
   (let loop ([h (hash)]
              [zxs terms])
     (match zxs
       ['() h]
-      [(cons (? integer? z) zxs-rest)
+      [(cons (? exact-integer? z) zxs-rest)
        (if (zero? z)
            (loop h zxs-rest)
            (loop (hash-update h CONST (λ (c) (+ c z)) 0) zxs-rest))]
@@ -92,18 +95,18 @@
 
 ; lexp-coefficient
 (define/contract (lexp-coefficient exp var)
-  (-> lexp? any/c integer?)
+  (-> lexp? any/c exact-integer?)
   (hash-ref exp var 0))
 
 ; lexp-constant
 (define/contract (lexp-constant exp)
-  (-> lexp? integer?)
+  (-> lexp? exact-integer?)
   (hash-ref exp CONST 0))
 
 ;; lexp-equal?
 (define/contract (lexp-equal? l1 l2)
   (-> lexp? lexp? boolean?)
-  (for/and ([key (hash-keys l1)])
+  (for/and ([key (union (hash-keys l1) (hash-keys l2))])
     (= (lexp-coefficient l1 key)
        (lexp-coefficient l2 key))))
 
@@ -127,7 +130,7 @@
 
 ; lexp-scale
 (define/contract (lexp-scale exp a)
-  (-> lexp? integer? lexp?)
+  (-> lexp? exact-integer? lexp?)
   (for/hash ([x (cons CONST (lexp-vars exp))])
     (values x (* a (lexp-coefficient exp x)))))
 
@@ -138,7 +141,7 @@
 ; lexp-set
 ; excludes items set to 0
 (define/contract (lexp-set exp var scalar)
-  (-> lexp? any/c integer? lexp?)
+  (-> lexp? any/c exact-integer? lexp?)
   (if (zero? scalar)
       (hash-remove exp var)
       (hash-set exp var scalar)))
@@ -146,7 +149,7 @@
 ; lexp-set-constant
 ; will not insert 0
 (define/contract (lexp-set-constant exp scalar)
-  (-> lexp? integer? lexp?)
+  (-> lexp? exact-integer? lexp?)
   (if (zero? scalar)
       (hash-remove exp CONST)
       (hash-set exp CONST scalar)))
@@ -225,16 +228,26 @@
   (check-true (lexp-equal? (lexp-subst (lexp 1 '(5 x) '(42 z)) 'y 'x) 
                              (lexp 1 '(5 y) '(42 z)))))
 
+; lexp-subst-lexp
+(define/contract (lexp-subst-lexp host-exp exp old-var)
+  (-> lexp? lexp? any/c lexp?)
+  (if (lexp-has-var? host-exp old-var)
+      (lexp-add (lexp-set host-exp old-var 0)
+                (lexp-scale exp (lexp-coefficient host-exp old-var)))
+      host-exp))
+
 ;; lexp->string
-(define/contract (lexp->string e)
-  (-> lexp? string?)
+(define/contract (lexp->string e [pp #f])
+  (-> lexp? (-> any/c any/c) string?)
   (define vars (lexp-vars e))
   (define const (lexp-constant e))
   (define term->string 
     (λ (x) (string-append (if (= 1 (lexp-coefficient e x))
                               ""
                               (number->string (lexp-coefficient e x)))
-                           "(" (~a x) ")")))
+                           "(" (if pp
+                                   (pp x)
+                                   (~a x)) ")")))
   (cond
     [(empty? vars) (number->string const)]
     [(zero? const)
@@ -253,7 +266,7 @@
 ;**********************************************************************
 
 ; leq def
-(struct leq (lhs rhs) #:transparent
+(struct Leq (lhs rhs) #:transparent
   #:guard (λ (l r name)
             (unless (and (lexp? l)
                          (lexp? r))
@@ -262,12 +275,12 @@
 
 ; leq-exps
 (define/contract (leq-exps ineq)
-  (-> leq? (values lexp? lexp?))
-  (values (leq-lhs ineq) (leq-rhs ineq)))
+  (-> Leq? (values lexp? lexp?))
+  (values (Leq-lhs ineq) (Leq-rhs ineq)))
 
 ;; leq-equal?
 (define/contract (leq-equal? l1 l2)
-  (-> leq? leq? boolean?)
+  (-> Leq? Leq? boolean?)
   (define-values (l1lhs l1rhs) (leq-exps l1))
   (define-values (l2lhs l2rhs) (leq-exps l2))
   (and (lexp-equal? l1lhs l2lhs)
@@ -276,9 +289,9 @@
 
 ; leq-contains-var
 (define/contract (leq-contains-var? ineq var)
-  (-> leq? any/c boolean?)
-  (or (lexp-has-var? (leq-lhs ineq) var)
-      (lexp-has-var? (leq-rhs ineq) var)))
+  (-> Leq? any/c boolean?)
+  (or (lexp-has-var? (Leq-lhs ineq) var)
+      (lexp-has-var? (Leq-rhs ineq) var)))
 
 (define (union l1 l2)
   (cond
@@ -290,23 +303,23 @@
 
 ; leq-vars
 (define/contract (leq-vars ineq)
-  (-> leq? list?)
-  (union (lexp-vars (leq-lhs ineq))
-         (lexp-vars (leq-rhs ineq))))
+  (-> Leq? list?)
+  (union (lexp-vars (Leq-lhs ineq))
+         (lexp-vars (Leq-rhs ineq))))
 
 ; leq-negate
 ; ~ (l1 <= l2) ->
 ; l2 <= 1 + l1 
 ; (obviously this is valid for integers only)
 (define (leq-negate ineq)
-  (-> leq? leq?)
-  (leq (lexp-add1 (leq-rhs ineq))
-       (leq-lhs ineq)))
+  (-> Leq? Leq?)
+  (Leq (lexp-add1 (Leq-rhs ineq))
+       (Leq-lhs ineq)))
 
 (module+ test
-  (check-true (leq-equal? (leq-negate (leq (lexp 0 '(1 x))
+  (check-true (leq-equal? (leq-negate (Leq (lexp 0 '(1 x))
                                             (lexp 0 '(1 y))))
-                           (leq (lexp 1 '(1 y))
+                           (Leq (lexp 1 '(1 y))
                                 (lexp 0 '(1 x))))))
 ; leq-isolate-var
 ; converts leq with x into either:
@@ -316,20 +329,20 @@
 ;  where a is a positive integer and x is on at most 
 ;  one side of the inequality
 (define (leq-isolate-var ineq x)
-  (-> leq? any/c)
+  (-> Leq? any/c)
   (define-values (lhs rhs) (leq-exps ineq))
   ; ... + ax + .... <= ... + bx + ...
   (define a (lexp-coefficient lhs x))
   (define b (lexp-coefficient rhs x))
   (cond
     [(and a b (= a b))
-     (leq (lexp-set lhs x 0)
+     (Leq (lexp-set lhs x 0)
           (lexp-set rhs x 0))]
     [(and a b (< a b))
-     (leq (lexp-set (lexp-subtract lhs rhs) x 0)
+     (Leq (lexp-set (lexp-subtract lhs rhs) x 0)
           (lexp `(,(- b a) ,x)))]
     [(and a b (> a b))
-     (leq (lexp `(,(- a b) ,x))
+     (Leq (lexp `(,(- a b) ,x))
           (lexp-subtract (lexp-set rhs x 0)
                          (lexp-set lhs x 0)))]
     [else
@@ -337,33 +350,33 @@
 
 ; x lhs
 (module+ test
-  (check-equal? (leq-isolate-var (leq (lexp '(3 x) '(2 z) '(5 y))
+  (check-equal? (leq-isolate-var (Leq (lexp '(3 x) '(2 z) '(5 y))
                                       (lexp '(1 x) '(1 z)))
                                  'x)
-                (leq (lexp '(2 x)) (lexp '(-5 y) '(-1 z))))
+                (Leq (lexp '(2 x)) (lexp '(-5 y) '(-1 z))))
   
   ;; x rhs
-  (check-equal? (leq-isolate-var (leq (lexp '(3 x) '(2 z) '(5 y))
+  (check-equal? (leq-isolate-var (Leq (lexp '(3 x) '(2 z) '(5 y))
                                       (lexp '(1 z) '(33 x)))
                                  'x)
-                (leq (lexp '(1 z) '(5 y)) (lexp '(30 x))))
+                (Leq (lexp '(1 z) '(5 y)) (lexp '(30 x))))
   ;; x eq
-  (check-equal? (leq-isolate-var (leq (lexp '(42 x) '(2 z) '(5 y))
+  (check-equal? (leq-isolate-var (Leq (lexp '(42 x) '(2 z) '(5 y))
                                       (lexp '(42 x) '(1 z)))
                                  'x)
-                (leq (lexp '(2 z) '(5 y))
+                (Leq (lexp '(2 z) '(5 y))
                      (lexp '(1 z))))
   ;; no x
-  (check-equal? (leq-isolate-var (leq (lexp '(2 z) '(5 y))
+  (check-equal? (leq-isolate-var (Leq (lexp '(2 z) '(5 y))
                                       (lexp '(1 z)))
                                  'x)
-                (leq (lexp '(2 z) '(5 y))
+                (Leq (lexp '(2 z) '(5 y))
                      (lexp '(1 z))))
 
                                         ; x mix
-  (check-equal? (leq-isolate-var (leq (lexp '(2 x) '(4 y) 1)
+  (check-equal? (leq-isolate-var (Leq (lexp '(2 x) '(4 y) 1)
                                       (lexp '(2 y))) 'x)
-                (leq (lexp '(2 x))
+                (Leq (lexp '(2 x))
                      (lexp -1 '(-2 y)))))
 
 
@@ -371,7 +384,7 @@
 ; takes a pair a1x <= l1 and l2 <= a2x
 ; and returns a2l1 <= a1l2
 (define/contract (leq-join leq1 leq2 x)
-  (-> leq? leq? any/c leq?)
+  (-> Leq? Leq? any/c Leq?)
   (define-values (lhs1 rhs1) (leq-exps leq1))
   (define-values (lhs2 rhs2) (leq-exps leq2))
   (cond
@@ -381,7 +394,7 @@
           (lexp-coefficient rhs2 x) (zero? (lexp-coefficient lhs2 x)))
      (let ([a1 (lexp-coefficient lhs1 x)]
            [a2 (lexp-coefficient rhs2 x)])
-       (leq (lexp-scale lhs2 a1)
+       (Leq (lexp-scale lhs2 a1)
             (lexp-scale rhs1 a2)))]
     ; leq1: l1 <= a1x
     ; leq2: a2x <= l2
@@ -389,51 +402,57 @@
           (lexp-coefficient lhs2 x) (zero? (lexp-coefficient rhs2 x)))
      (let ([a1 (lexp-coefficient rhs1 x)]
            [a2 (lexp-coefficient lhs2 x)])
-       (leq (lexp-scale lhs1 a2)
+       (Leq (lexp-scale lhs1 a2)
             (lexp-scale rhs2 a1)))]
     [else
      (error 'leq-join "bad pair for joining by ~a: ~a, ~a" x leq1 leq2)]))
 
 (module+ test 
-  (check-equal? (leq-join (leq (lexp '(2 x))
+  (check-equal? (leq-join (Leq (lexp '(2 x))
                                (lexp '(4 y) 10))
-                          (leq (lexp '(4 z) 2)
+                          (Leq (lexp '(4 z) 2)
                                (lexp '(4 x)))
                           'x)
-                (leq (lexp '(8 z) 4)
+                (Leq (lexp '(8 z) 4)
                      (lexp '(16 y) 40))))
 
 
 ; trivially-valid?
 ; requires an inequality over constants only
 (define/contract (leq-trivially-valid? ineq)
-  (-> (and/c leq? (λ (ineq) (empty? (leq-vars ineq))))
+  (-> (and/c Leq? (λ (ineq) (empty? (leq-vars ineq))))
       boolean?)
-  (define lhs-val (lexp-coefficient (leq-lhs ineq) CONST))
-  (define rhs-val (lexp-coefficient (leq-rhs ineq) CONST))
+  (define lhs-val (lexp-coefficient (Leq-lhs ineq) CONST))
+  (define rhs-val (lexp-coefficient (Leq-rhs ineq) CONST))
   (<= lhs-val rhs-val))
 
 
 ; leq-subst
 (define/contract (leq-subst ineq new old)
-  (-> leq? any/c any/c leq?)
-  (leq (lexp-subst (leq-lhs ineq) new old)
-       (lexp-subst (leq-rhs ineq) new old)))
+  (-> Leq? any/c any/c Leq?)
+  (Leq (lexp-subst (Leq-lhs ineq) new old)
+       (lexp-subst (Leq-rhs ineq) new old)))
 
 (module+ test
-  (check-equal? (leq-subst (leq-subst (leq (lexp '(1 x))
+  (check-equal? (leq-subst (leq-subst (Leq (lexp '(1 x))
                                            (lexp '(1 y)))
                                       'y2 
                                       'y)
                            'x2
                            'x)
-                (leq (lexp '(1 x2))
+                (Leq (lexp '(1 x2))
                      (lexp '(1 y2)))))
 
-(define/contract (leq->string ineq)
-  (-> leq? string?)
+; leq-subst
+(define/contract (leq-subst-lexp ineq new-lexp old-var)
+  (-> Leq? lexp? any/c Leq?)
+  (Leq (lexp-subst-lexp (Leq-lhs ineq) new-lexp old-var)
+       (lexp-subst-lexp (Leq-rhs ineq) new-lexp old-var)))
+
+(define/contract (leq->string ineq [pp #f])
+  (-> Leq? (-> any/c any/c) string?)
   (define-values (lhs rhs) (leq-exps ineq))
-  (string-append (lexp->string lhs) " ≤ " (lexp->string rhs)))
+  (string-append (lexp->string lhs pp) " ≤ " (lexp->string rhs pp)))
 
 ;**********************************************************************
 ; Systems of Integer Linear Inequalities (sli)
@@ -444,7 +463,7 @@
 ;**********************************************************************
 
 (define/contract (sli->string sli)
-  (-> (listof leq?) string?)
+  (-> (listof Leq?) string?)
   (string-append 
    (cond
      [(empty? sli) "("]
@@ -456,22 +475,27 @@
 
 ; sli-vars
 (define/contract (sli-vars sli)
-  (-> (listof leq?) list?)
+  (-> (listof Leq?) list?)
   (foldl union empty (map leq-vars sli)))
 
 (module+ test
-  (check-equal? (sli-vars (list (leq (lexp '(1 x))
+  (check-equal? (sli-vars (list (Leq (lexp '(1 x))
                                    (lexp '(1 y)))
-                              (leq (lexp '(1 x) '(1 z))
+                              (Leq (lexp '(1 x) '(1 z))
                                    (lexp '(1 q)))
-                              (leq (lexp '(1 r) '(3 z))
+                              (Leq (lexp '(1 r) '(3 z))
                                    (lexp '(1 x)))))
                 '(r q z y x)))
 
 ; sli-subst
 (define/contract (sli-subst sli new old)
-  (-> (listof leq?) any/c any/c (listof leq?))
+  (-> (listof Leq?) any/c any/c (listof Leq?))
   (map (λ (x) (leq-subst x new old)) sli))
+
+; sli-subst-lexp
+(define/contract (sli-subst-lexp sli new-lexp old-var)
+  (-> (listof Leq?) lexp? any/c (listof Leq?))
+  (map (λ (x) (leq-subst-lexp x new-lexp old-var)) sli))
 
 ; sli-partition
 ; partitions leq expressions into
@@ -480,55 +504,55 @@
 ;  value 2) list of form (by + cz + ... <= ax) leqs
 ;  value 3) leqs w/o x
 (define/contract (sli-partition leqs x)
-  (-> (listof leq?) any/c (values (listof leq?) (listof leq?) (listof leq?)))
+  (-> (listof Leq?) any/c (values (listof Leq?) (listof Leq?) (listof Leq?)))
   (define nleqs (map (λ (ineq) (leq-isolate-var ineq x)) leqs))
   (for/fold ([xslhs empty]
              [xsrhs empty]
              [noxs empty]) ([ineq nleqs])
     (cond
-      [(lexp-has-var? (leq-lhs ineq) x)
+      [(lexp-has-var? (Leq-lhs ineq) x)
        (values (cons ineq xslhs) xsrhs noxs)]
-      [(lexp-has-var? (leq-rhs ineq) x)
+      [(lexp-has-var? (Leq-rhs ineq) x)
        (values xslhs (cons ineq xsrhs) noxs)]
       [else
        (values xslhs xsrhs (cons ineq noxs))])))
 
 (module+ test
   (check-equal? (let-values ([(lt gt no)
-                              (sli-partition  (list (leq (lexp '(2 x) '(4 y) 1)
+                              (sli-partition  (list (Leq (lexp '(2 x) '(4 y) 1)
                                                         (lexp '(2 y)))) 
                                               'x)])
                   (list lt gt no))
-                (list (list (leq (lexp '(2 x)) 
+                (list (list (Leq (lexp '(2 x)) 
                                  (lexp '(-2 y) -1)))
                       empty
                       empty))
   (check-equal? (let-values ([(lt gt no)
-                              (sli-partition  (list (leq (lexp '(2 x) '(4 y) 1)
+                              (sli-partition  (list (Leq (lexp '(2 x) '(4 y) 1)
                                                         (lexp '(2 y)))
-                                                   (leq (lexp '(2 x) '(4 y))
+                                                   (Leq (lexp '(2 x) '(4 y))
                                                         (lexp '(2 y) '(42 x)))) 
                                               'x)])
                   (list lt gt no))
-                (list (list (leq (lexp '(2 x)) 
+                (list (list (Leq (lexp '(2 x)) 
                                  (lexp '(-2 y) -1)))
-                      (list (leq (lexp '(2 y))
+                      (list (Leq (lexp '(2 y))
                                  (lexp '(40 x))))
                       empty))
   (check-equal? (let-values ([(lt gt no)
-                              (sli-partition  (list (leq (lexp '(2 x) '(4 y) -1)
+                              (sli-partition  (list (Leq (lexp '(2 x) '(4 y) -1)
                                                         (lexp '(2 y)))
-                                                   (leq (lexp '(2 x) '(4 y))
+                                                   (Leq (lexp '(2 x) '(4 y))
                                                         (lexp '(2 y) '(42 x)))
-                                                   (leq (lexp '(2 z) '(4 y))
+                                                   (Leq (lexp '(2 z) '(4 y))
                                                         (lexp '(2 y) '(42 q)))) 
                                               'x)])
                   (list lt gt no))
-                (list (list (leq (lexp '(2 x)) 
+                (list (list (Leq (lexp '(2 x)) 
                                 (lexp '(-2 y) 1)))
-                      (list (leq (lexp '(2 y))
+                      (list (Leq (lexp '(2 y))
                                 (lexp '(40 x))))
-                      (list (leq (lexp '(2 z) '(4 y))
+                      (list (Leq (lexp '(2 z) '(4 y))
                                 (lexp '(2 y) '(42 q)))))))
 
 
@@ -546,7 +570,7 @@
 ; reduces the system of linear inequalties,
 ; removing x
 (define/contract (sli-elim-var sli x)
-  (-> (listof leq?) any/c (listof leq?))
+  (-> (listof Leq?) any/c (listof Leq?))
   (define-values (xltleqs xgtleqs noxleqs) (sli-partition sli x))
   (append (cartesian-map (λ (leq1 leq2) (leq-join leq1 leq2 x)) 
                          xltleqs 
@@ -555,9 +579,7 @@
 
 ; sli-satisfiable?
 (define/contract (sli-satisfiable? sli)
-  (-> (and/c (listof leq?) 
-             (not/c empty?))
-      boolean?)
+  (-> (listof Leq?) boolean?)
   (define vars (sli-vars sli))
   (define simple-system
     (for/fold ([system sli]) ([x vars])
@@ -567,22 +589,22 @@
 
 (module+ test
   ; 3x + 2y <= 7; 6x + 4y <= 15;  -x <= 1; 0 <= 2y has integer solutions
-  (check-true (sli-satisfiable? (list (leq (lexp '(3 x) '(2 y))
+  (check-true (sli-satisfiable? (list (Leq (lexp '(3 x) '(2 y))
                                            (lexp 7))
-                                     (leq (lexp '(6 x) '(4 y))
+                                     (Leq (lexp '(6 x) '(4 y))
                                           (lexp 15))
-                                     (leq (lexp '(-1 x))
+                                     (Leq (lexp '(-1 x))
                                           (lexp 1))
-                                     (leq (lexp 0)
+                                     (Leq (lexp 0)
                                           (lexp '(2 y))))))
 
 
   ; 3x + 2y <= 4; 1 <= x; 1 <= y no solutions 
-  (check-false (sli-satisfiable? (list (leq (lexp '(3 x) '(2 y))
+  (check-false (sli-satisfiable? (list (Leq (lexp '(3 x) '(2 y))
                                            (lexp 4))
-                                      (leq (lexp 1)
+                                      (Leq (lexp 1)
                                            (lexp '(1 x)))
-                                      (leq (lexp 1)
+                                      (Leq (lexp 1)
                                            (lexp '(1 y)))))))
 
 ;**********************************************************************
@@ -591,39 +613,39 @@
 
 ; sli-implies-leq
 (define/contract (sli-proves-leq? system ineq)
-  (-> (listof leq?) leq? boolean?)
+  (-> (listof Leq?) Leq? boolean?)
   (not (sli-satisfiable? (cons (leq-negate ineq)
                                system))))
 
 (module+ test
   ; transitivity! x <= y /\ y <= z --> x <= z
-  (check-true (sli-proves-leq? (list (leq (lexp '(1 x))
+  (check-true (sli-proves-leq? (list (Leq (lexp '(1 x))
                                          (lexp '(1 y)))
-                                    (leq (lexp '(1 y))
+                                    (Leq (lexp '(1 y))
                                          (lexp '(1 z))))
-                               (leq (lexp '(1 x))
+                               (Leq (lexp '(1 x))
                                     (lexp '(1 z)))))
 
 
   ; x  <= x;
   (check-true (sli-proves-leq? empty
-                               (leq (lexp '(1 x))
+                               (Leq (lexp '(1 x))
                                     (lexp '(1 x)))))
 
   ; x  - 1 <= x + 1;
   (check-true (sli-proves-leq? empty
-                               (leq (lexp '(1 x) -1)
+                               (Leq (lexp '(1 x) -1)
                                     (lexp '(1 x) 1))))
 
 
   ; x + y <= z; 1 <= y; 0 <= x --> x + 1 <= z
-  (check-true (sli-proves-leq? (list (leq (lexp '(1 x) '(1 y))
+  (check-true (sli-proves-leq? (list (Leq (lexp '(1 x) '(1 y))
                                          (lexp '(1 z)))
-                                    (leq (lexp 1)
+                                    (Leq (lexp 1)
                                          (lexp '(1 y)))
-                                    (leq (lexp)
+                                    (Leq (lexp)
                                          (lexp '(1 x))))
-                               (leq (lexp '(1 x) 1)
+                               (Leq (lexp '(1 x) 1)
                                     (lexp '(1 z))))))
 
 ;**********************************************************************
@@ -632,7 +654,7 @@
 
 ; sli-implies-integer-sli
 (define/contract (sli-proves-sli? assumptions goals)
-  (-> (listof leq?) (listof leq?) boolean?)
+  (-> (listof Leq?) (listof Leq?) boolean?)
   (andmap (λ (ineq) (sli-proves-leq? assumptions ineq))
           goals))
 
@@ -640,60 +662,60 @@
 (module+ test
   ;; 4 <= 3 is false
   (check-false (sli-proves-sli? empty
-                                (list (leq (lexp 4)
+                                (list (Leq (lexp 4)
                                           (lexp 3)))))
   ;; P and ~P --> false
-  (check-true (sli-proves-sli? (list (leq (lexp) (lexp '(1 y)))
-                                    (leq-negate (leq (lexp) (lexp '(1 y)))))
-                               (list (leq (lexp 4)
+  (check-true (sli-proves-sli? (list (Leq (lexp) (lexp '(1 y)))
+                                    (leq-negate (Leq (lexp) (lexp '(1 y)))))
+                               (list (Leq (lexp 4)
                                          (lexp 3)))))
 
 
   ;; x + y <= z; 0 <= y; 0 <= x --> x <= z /\ y <= z
-  (check-true (sli-proves-sli? (list (leq (lexp '(1 x) '(1 y))
+  (check-true (sli-proves-sli? (list (Leq (lexp '(1 x) '(1 y))
                                          (lexp '(1 z)))
-                                    (leq (lexp)
+                                    (Leq (lexp)
                                          (lexp '(1 y)))
-                                    (leq (lexp)
+                                    (Leq (lexp)
                                          (lexp '(1 x))))
-                               (list (leq (lexp '(1 x))
+                               (list (Leq (lexp '(1 x))
                                           (lexp '(1 z)))
-                                     (leq (lexp '(1 y))
+                                     (Leq (lexp '(1 y))
                                           (lexp '(1 z))))))
 
   ;; x + y <= z; 0 <= y; 0 <= x -/-> x <= z /\ y <= q
-  (check-false (sli-proves-sli? (list (leq (lexp '(1 x) '(1 y))
+  (check-false (sli-proves-sli? (list (Leq (lexp '(1 x) '(1 y))
                                           (lexp '(1 z)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 y)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x))))
-                                (list (leq (lexp '(1 x))
+                                (list (Leq (lexp '(1 x))
                                           (lexp '(1 z)))
-                                     (leq (lexp '(1 y))
+                                     (Leq (lexp '(1 y))
                                           (lexp '(1 q))))))
 
   ;; 7x <= 29 --> x <= 4
-  (check-true (sli-proves-sli? (list (leq (lexp '(7 x))
+  (check-true (sli-proves-sli? (list (Leq (lexp '(7 x))
                                          (lexp 29)))
-                               (list (leq (lexp '(1 x))
+                               (list (Leq (lexp '(1 x))
                                          (lexp 4)))))
   ;; 7x <= 28 --> x <= 4
-  (check-true (sli-proves-sli? (list (leq (lexp '(7 x))
+  (check-true (sli-proves-sli? (list (Leq (lexp '(7 x))
                                          (lexp 28)))
-                               (list (leq (lexp '(1 x))
+                               (list (Leq (lexp '(1 x))
                                          (lexp 4)))))
   ;; 7x <= 28 does not --> x <= 3
-  (check-false (sli-proves-sli? (list (leq (lexp '(7 x))
+  (check-false (sli-proves-sli? (list (Leq (lexp '(7 x))
                                           (lexp 28)))
-                                (list (leq (lexp '(1 x))
+                                (list (Leq (lexp '(1 x))
                                           (lexp 3)))))
 
 
   ;; 7x <= 27 --> x <= 3
-  (check-true (sli-proves-sli? (list (leq (lexp '(7 x))
+  (check-true (sli-proves-sli? (list (Leq (lexp '(7 x))
                                          (lexp 27)))
-                               (list (leq (lexp '(1 x))
+                               (list (Leq (lexp '(1 x))
                                          (lexp 3)))))
 
   ;; 4x+3y+9z+20q-100r + 42 <= 4x+3y+9z+20q+100r; 
@@ -709,29 +731,29 @@
   ;; 0 <= x + r + q;
   ;; -->
   ;; 0 <= t
-  (check-true (sli-proves-sli? (list (leq (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(-100 r) 42)
+  (check-true (sli-proves-sli? (list (Leq (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(-100 r) 42)
                                           (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(100 r)))
-                                     (leq (lexp '(1 x))
+                                     (Leq (lexp '(1 x))
                                           (lexp '(1 y) '(1 z)))
-                                     (leq (lexp '(29 r))
+                                     (Leq (lexp '(29 r))
                                           (lexp '(1 x) '(1 y) '(1 z) '(1 q)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x) '(1 y) '(1 z)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x) '(1 z)))
-                                     (leq (lexp '(1 x))
+                                     (Leq (lexp '(1 x))
                                           (lexp '(1 z)))
-                                     (leq (lexp '(1 z) 1)
+                                     (Leq (lexp '(1 z) 1)
                                           (lexp '(1 t)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x) '(1 y)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x) '(1 r)))
-                                     (leq (lexp)
+                                     (Leq (lexp)
                                           (lexp '(1 x) '(1 r) '(1 q))))
-                               (list (leq (lexp)
+                               (list (Leq (lexp)
                                           (lexp '(1 t))))))
 
   ;; 4x+3y+9z+20q-100r + 42 <= 4x+3y+9z+20q+100r; 
@@ -747,27 +769,27 @@
   ;; 0 <= x + r + q;
   ;; -/->
   ;; t <= 0
-  (check-false (sli-proves-sli? (list (leq (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(-100 r) 42)
+  (check-false (sli-proves-sli? (list (Leq (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(-100 r) 42)
                                            (lexp '(4 x) '(3 y) '(9 z) '(20 q) '(100 r)))
-                                      (leq (lexp '(1 x))
+                                      (Leq (lexp '(1 x))
                                            (lexp '(1 y) '(1 z)))
-                                      (leq (lexp '(29 r))
+                                      (Leq (lexp '(29 r))
                                            (lexp '(1 x) '(1 y) '(1 z) '(1 q)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x) '(1 y) '(1 z)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x) '(1 z)))
-                                      (leq (lexp '(1 x))
+                                      (Leq (lexp '(1 x))
                                            (lexp '(1 z)))
-                                      (leq (lexp '(1 z) 1)
+                                      (Leq (lexp '(1 z) 1)
                                            (lexp '(1 t)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x) '(1 y)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x) '(1 r)))
-                                      (leq (lexp)
+                                      (Leq (lexp)
                                            (lexp '(1 x) '(1 r) '(1 q))))
-                                (list (leq (lexp '(1 t))
+                                (list (Leq (lexp '(1 t))
                                            (lexp))))))
