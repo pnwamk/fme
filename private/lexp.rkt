@@ -50,7 +50,7 @@
 (define-syntax-rule (lexp* t ...)
   (list->lexp (list t ...)))
 
-(define/contract (list->lexp terms)
+(define/cond-contract (list->lexp terms)
   (-> (listof (or/c exact-integer? (list/c exact-integer? any/c))) lexp?)
   (define coef car)
   (define var cadr)
