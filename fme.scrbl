@@ -146,13 +146,7 @@ Returns a linear expression equal to
 
 @defproc[(lexp-plus [e1 lexp?] [e2 lexp?])
          lexp?]{
-  Adds @racket[e1] @racket[e2].}
-
-@defproc[(lexp-minus [e1 lexp?] [e2 lexp?])
-         lexp?]{
-  Returns the result of @racket[e1] - @racket[e1]. 
-  For example (shown below), 
-  (2x + 3y - 1) + (2x + 42z - 1) = 3y - 42z
+  Adds @racket[e1] @racket[e2].
   
   @examples[#:eval fme-eval
                    (lexp->string (lexp-plus (lexp '(2 x) '(3 y) -1)
