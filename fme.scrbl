@@ -78,7 +78,7 @@ are done using equal?).}
 
 @defproc[(lexp? [e any/c])
          boolean?]{
-  Returns @racket[#t] if @racket[e] is a linear expression.}
+  Returns @racket[#t] if @racket[e] is a linear expression constructed with @racket[lexp].}
 
 @defproc[(lexp-coeff [e lexp?] [x any/c])
          integer?]{
@@ -146,7 +146,7 @@ Returns a linear expression equal to
 
 @defproc[(lexp-plus [e1 lexp?] [e2 lexp?])
          lexp?]{
-  Adds @racket[e1] @racket[e2].
+  Adds @racket[e1] and @racket[e2].
   
   @examples[#:eval fme-eval
                    (lexp->string (lexp-plus (lexp '(2 x) '(3 y) -1)
@@ -174,10 +174,22 @@ Returns a linear expression equal to @racket[e] but with all occurrences of
 
 @section{Linear Inequalities}
 
-@defstruct[leq ([lhs lexp?] [rhs lexp?])]{
-   A structure representing a less-than-or-equal-to inequality
+@defproc[(leq [lhs lexp?] [rhs lexp?])
+         lexp?]{
+Builds structure representing a less-than-or-equal-to inequality
    of the form lhs ≤ rhs. When constructed, the leq is normalized,
-   dividing all scalars by the gcd of all scalars in the leq.}
+   based on the gcd of all scalars in the leq:
+   
+   @examples[#:eval fme-eval
+                  (equal? (leq (lexp 4 '(8 x))
+                               (lexp '(16 x) '(12 z)))
+                          (leq (lexp 1 '(2 x))
+                               (lexp '(4 x) '(3 z))))]
+   }
+
+@defproc[(leq? [e any/c])
+         boolean?]{
+  Returns @racket[#t] if @racket[e] is a linear inequality constructed with @racket[leq].}
 
 @defproc[(leq-lexps [ineq leq?])
          (values lexp? lexp?)]{
@@ -194,7 +206,7 @@ Returns a linear expression equal to @racket[e] but with all occurrences of
 @defproc[(leq-isolate-var [ineq leq?] [x any/c])
          leq?]{
  Converts an inequality into either (a@racket[x] ≤ by + cz + ...) or (by + cz + ... ≤ a@racket[x])
- such that a is a positive integer and @racket[x] appears on at most one side of the inequality.
+ such that @racket[a] is a positive integer and @racket[x] appears on at most one side of the inequality.
  If @racket[x] is not in ineq, it is a no-op.}
 
 @defproc[(leq-join [ineq1 leq?] [ineq2 leq?] [x any/c])
@@ -223,7 +235,7 @@ Returns a linear expression equal to @racket[e] but with all occurrences of
 
 @defproc[(sli-partition [sys sli?] [x any/c])
          (values sli? sli? sli?)]{
-  3-way partitions @racket[sys] based on how leq-isolate-var would 
+  3-way partitions @racket[sys] based on how @racket[leq-isolate-var] would 
   re-order the inequality in terms of @racket[x]:
   @itemlist[@item{Inequalities of the form (a@racket[x] ≤ by + cz + ...)}
              @item{Inequalities of the form (by + cz + ... ≤ a@racket[x])}
