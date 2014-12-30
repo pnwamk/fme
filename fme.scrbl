@@ -223,7 +223,7 @@ Builds structure representing a less-than-or-equal-to inequality
 
 @defproc[(sli? [a any/c])
          boolean?]{
-  Equivalent to @racket[(setof leq?)].
+  Equivalent to @racket[(set/c  leq?)].
 }
 
 
