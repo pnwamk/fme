@@ -179,11 +179,21 @@
                             xgtleqs)
              noxleqs))
 
+;; reduces the system of linear inequalties,
+;; removing variables x for which (pred? x) = #t
+(define/cond-contract (fme-elim* sli pred?)
+  (-> sli? any/c sli?)
+  (define vars (filter pred? (sli-vars sli)))
+  (for/fold ([s sli]) 
+            ([x (in-list vars)])
+    (fme-elim s x)))
+
 ;; sli-satisfiable?
 (define/cond-contract (fme-sat? sli)
   (-> sli? boolean?)
   (let* ([vars (sli-vars sli)]
-         [simple-system (for/fold ([s sli]) ([x vars])
+         [simple-system (for/fold ([s sli]) 
+                                  ([x (in-list vars)])
                           (fme-elim s x))])
     (for/and ([ineq (in-set simple-system)])
       (leq-trivially-valid? ineq))))
