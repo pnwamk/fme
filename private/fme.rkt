@@ -182,7 +182,7 @@
 ;; reduces the system of linear inequalties,
 ;; removing variables x for which (pred? x) = #t
 (define/cond-contract (fme-elim* sli pred?)
-  (-> sli? any/c sli?)
+  (-> sli? (-> any/c boolean?) sli?)
   (define vars (filter pred? (sli-vars sli)))
   (for/fold ([s sli]) 
             ([x (in-list vars)])
